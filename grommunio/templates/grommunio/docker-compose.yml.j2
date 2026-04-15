@@ -1,0 +1,94 @@
+services:
+  gromox-db:
+    image: {{ db_image }}
+    container_name: gromox-db
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: {{ db_root_password }}
+      MARIADB_DATABASE: {{ db_name }}
+      MARIADB_USER: {{ db_user }}
+      MARIADB_PASSWORD: {{ db_password }}
+    volumes:
+      - ./data/grommunio/db/mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb --host=localhost --user=$$MARIADB_USER --password=$$MARIADB_PASSWORD -e 'SELECT 1;'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+
+{% if enable_chat %}
+  chat-db:
+    image: {{ chat_db_image }}
+    container_name: chat-db
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: {{ db_root_password }}
+      MARIADB_DATABASE: {{ chat_db_name }}
+      MARIADB_USER: {{ chat_db_user }}
+      MARIADB_PASSWORD: {{ chat_db_password }}
+    volumes:
+      - ./data/grommunio/db/chat:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb --host=localhost --user=$$MARIADB_USER --password=$$MARIADB_PASSWORD -e 'SELECT 1;'"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+
+{% endif %}
+  gromox-core:
+    build:
+      context: .
+      dockerfile: ./gromox-core/Dockerfile
+    container_name: gromox-core
+    restart: unless-stopped
+    depends_on:
+      gromox-db:
+        condition: service_healthy
+{% if enable_chat %}
+      chat-db:
+        condition: service_healthy
+{% endif %}
+    extra_hosts:
+      - "{{ internal_hostname }}=[::1]"
+    volumes:
+      - ./data/grommunio/variables:/home/vars
+      - ./data/grommunio/certs:/etc/grommunio-common/ssl
+      - ./data/grommunio/gromox_config:/etc/gromox
+      - ./data/grommunio/gromox:/var/lib/gromox
+      - ./postfix/transport.seed:/home/postfix-transport.seed:ro
+      - ./data/grommunio/gromox_services:/home/gromox-services
+      - ./data/grommunio/admin_api:/var/lib/grommunio-admin-api
+      - ./data/grommunio/antispam:/var/lib/grommunio-antispam
+      - ./data/grommunio/dav:/var/lib/grommunio-dav
+      - ./data/grommunio/web:/var/lib/grommunio-web
+      - ./data/grommunio/letsencrypt:/etc/letsencrypt
+      - ./data/grommunio/setup:/data
+    expose:
+{{ exposed_port_lines|indent(6, true) }}
+    networks:
+      default:
+{% if edge_network %}
+      {{ edge_network }}:
+{% if edge_alias %}
+        aliases:
+          - {{ edge_alias }}
+{% endif %}
+{% endif %}
+      {{ mailhub_network }}:
+        aliases:
+          - {{ mailhub_alias }}
+{% if published_ports %}
+    ports:
+{{ published_port_lines|indent(6, true) }}
+{% endif %}
+
+networks:
+  default:
+    driver: bridge
+    enable_ipv6: true
+{% if edge_network %}
+  {{ edge_network }}:
+    external: true
+{% endif %}
+  {{ mailhub_network }}:
+    external: true

@@ -1,0 +1,217 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+cd "$SCRIPT_DIR"
+
+readonly INTERNAL_HOSTNAME={{ internal_hostname|shell_quote }}
+readonly FQDN={{ fqdn|shell_quote }}
+readonly DOMAIN={{ domain|shell_quote }}
+readonly DOMAIN_MAX_USERS={{ domain_max_users|shell_quote }}
+readonly ORGANIZATION={{ organization|shell_quote }}
+readonly MAILBOX_EMAIL={{ mailbox_email|shell_quote }}
+
+MAILBOX_PASSWORD=${GROMMUNIO_MAILBOX_PASSWORD:-}
+SERVER_ID=""
+
+usage() {
+  cat <<'EOF'
+Provision or update the single-node grommunio objects for this generated bundle.
+
+Usage:
+  GROMMUNIO_MAILBOX_PASSWORD='...' ./provision-grommunio.sh
+
+What it does:
+- ensures the expected single-node server entry exists
+- ensures the mail domain exists
+- creates or updates the mailbox user with the intended protocol privileges
+- normalizes the mailbox store-side SMTP identity properties
+- sets the mailbox password
+
+What it does not do:
+- it does not touch the SQL layer directly
+- it does not delete or rewrite unrelated server/domain/user objects
+EOF
+}
+
+core_exec() {
+  docker compose exec -T gromox-core "$@"
+}
+
+wait_for_core() {
+  local attempt
+  local status
+  for attempt in $(seq 1 30); do
+    status=$(core_exec supervisorctl status \
+      grommunio-admin-api \
+      gromox-http \
+      gromox-midb \
+      gromox-timer \
+      gromox-zcore \
+      nginx \
+      php-fpm 2>/dev/null || true)
+    if [[ -n "$status" ]] && printf '%s\n' "$status" | awk 'NF && $2 != "RUNNING" { exit 1 }'; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "gromox-core did not become ready in time" >&2
+  return 1
+}
+
+read_password_if_needed() {
+  if [[ -n "$MAILBOX_PASSWORD" ]]; then
+    return 0
+  fi
+  if [[ -t 0 ]]; then
+    read -r -s -p "Mailbox password for ${MAILBOX_EMAIL}: " MAILBOX_PASSWORD
+    echo
+    if [[ -n "$MAILBOX_PASSWORD" ]]; then
+      return 0
+    fi
+  fi
+  echo "Set GROMMUNIO_MAILBOX_PASSWORD before running this script." >&2
+  return 1
+}
+
+find_server_id() {
+  local line
+  local id
+  local count=0
+  local candidate=""
+
+  while IFS= read -r line; do
+    [[ -z "$line" || "$line" == "No servers found." || ! "$line" =~ ^[0-9]+: ]] && continue
+    id=${line%%:*}
+    count=$((count + 1))
+    if [[ "$line" == *"(${FQDN})"* ]] || [[ "$line" == *": ${INTERNAL_HOSTNAME} ("* ]]; then
+      candidate=$id
+    elif [[ -z "$candidate" ]]; then
+      candidate=$id
+    fi
+  done < <(core_exec grommunio-admin server list 2>/dev/null || true)
+
+  if (( count == 0 )); then
+    return 1
+  fi
+  if (( count > 1 )) && [[ -z "$candidate" ]]; then
+    echo "multiple grommunio server entries exist; refuse to guess which one to modify" >&2
+    return 2
+  fi
+  printf '%s\n' "$candidate"
+}
+
+ensure_server() {
+  local existing_id
+  if existing_id=$(find_server_id); then
+    core_exec grommunio-admin server modify "$existing_id" -H "$INTERNAL_HOSTNAME" -e "$FQDN" >/dev/null
+    SERVER_ID=$existing_id
+    return 0
+  fi
+
+  core_exec grommunio-admin server create -H "$INTERNAL_HOSTNAME" -e "$FQDN" >/dev/null
+  SERVER_ID=$(find_server_id)
+  if [[ -z "$SERVER_ID" ]]; then
+    echo "failed to resolve the grommunio server ID after creation" >&2
+    return 1
+  fi
+}
+
+ensure_domain() {
+  local domain_show
+  local current_home
+  local domain_args=()
+
+  if domain_show=$(core_exec grommunio-admin domain show "$DOMAIN" 2>/dev/null); then
+    current_home=$(printf '%s\n' "$domain_show" | sed -n 's/^  homeserver: \([0-9][0-9]*\).*/\1/p')
+    if [[ -n "$current_home" && "$current_home" != "$SERVER_ID" ]]; then
+      cat >&2 <<EOF
+Existing domain ${DOMAIN} is bound to homeserver ${current_home}, not ${SERVER_ID}.
+The current grommunio-admin domain modify command cannot change homeserver.
+Recreate the domain or rebuild the stack if you need to move it.
+EOF
+      return 1
+    fi
+    domain_args=(grommunio-admin domain modify "$DOMAIN" -u "$DOMAIN_MAX_USERS")
+    if [[ -n "$ORGANIZATION" ]]; then
+      domain_args+=(--title "$ORGANIZATION")
+    fi
+    core_exec "${domain_args[@]}" >/dev/null
+    return 0
+  fi
+
+  domain_args=(grommunio-admin domain create --homeserver "$SERVER_ID" -u "$DOMAIN_MAX_USERS")
+  if [[ -n "$ORGANIZATION" ]]; then
+    domain_args+=(--title "$ORGANIZATION")
+  fi
+  domain_args+=("$DOMAIN")
+  core_exec "${domain_args[@]}" >/dev/null
+}
+
+wait_for_user() {
+  local attempt
+  for attempt in $(seq 1 30); do
+    if core_exec grommunio-admin user show "$MAILBOX_EMAIL" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "mailbox ${MAILBOX_EMAIL} never became visible to grommunio-admin" >&2
+  return 1
+}
+
+ensure_user() {
+  local user_args=(
+    --homeserver "$SERVER_ID"
+    --status normal
+    --pop3-imap true
+    --smtp true
+    --privWeb true
+    --privDav true
+    --privEas true
+  )
+
+  if core_exec grommunio-admin user show "$MAILBOX_EMAIL" >/dev/null 2>&1; then
+    core_exec grommunio-admin user modify "${user_args[@]}" "$MAILBOX_EMAIL" >/dev/null
+  else
+    core_exec grommunio-admin user create --domain "$DOMAIN" "${user_args[@]}" "$MAILBOX_EMAIL" >/dev/null
+  fi
+
+  wait_for_user
+  core_exec grommunio-admin user modify \
+    --property "SMTPADDRESS=${MAILBOX_EMAIL}" \
+    --property "EMAILADDRESS=${MAILBOX_EMAIL}" \
+    "$MAILBOX_EMAIL" >/dev/null
+  core_exec grommunio-admin passwd --password "$MAILBOX_PASSWORD" "$MAILBOX_EMAIL" >/dev/null
+}
+
+print_summary() {
+  echo "Provisioning finished for ${MAILBOX_EMAIL}."
+  echo
+  core_exec grommunio-admin server list
+  echo
+  core_exec grommunio-admin domain show "$DOMAIN"
+  echo
+  core_exec grommunio-admin user show "$MAILBOX_EMAIL"
+  echo
+  cat <<'EOF'
+Next step:
+  GROMMUNIO_MAILBOX_PASSWORD='...' ./verify-grommunio.sh
+
+If the web application still returns HTTP 500 after authentication, use the
+verification helper first. It captures the exact local checks and log tails
+that were most useful during production debugging.
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+wait_for_core
+read_password_if_needed
+ensure_server
+ensure_domain
+ensure_user
+print_summary

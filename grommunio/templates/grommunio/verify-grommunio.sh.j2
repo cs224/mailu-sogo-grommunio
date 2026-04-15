@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+cd "$SCRIPT_DIR"
+
+readonly DOMAIN={{ domain|shell_quote }}
+readonly MAILBOX_EMAIL={{ mailbox_email|shell_quote }}
+
+MAILBOX_PASSWORD=${GROMMUNIO_MAILBOX_PASSWORD:-}
+
+usage() {
+  cat <<'EOF'
+Run the local operator-facing checks for this generated grommunio bundle.
+
+Usage:
+  GROMMUNIO_MAILBOX_PASSWORD='...' ./verify-grommunio.sh
+
+Checks:
+- supervisor service status inside gromox-core
+- mailbox visibility through grommunio-admin
+- EXMDB folder access for the mailbox
+- mailbox property visibility through grommunio-admin
+- local HTTPS login page and post-login web shell smoke
+- the three most useful log tails if the web smoke fails
+EOF
+}
+
+core_exec() {
+  docker compose exec -T gromox-core "$@"
+}
+
+wait_for_core() {
+  local attempt
+  local status
+  for attempt in $(seq 1 30); do
+    status=$(core_exec supervisorctl status \
+      grommunio-admin-api \
+      gromox-event \
+      gromox-http \
+      gromox-midb \
+      gromox-timer \
+      gromox-zcore \
+      nginx \
+      php-fpm \
+      postfix 2>/dev/null || true)
+    if [[ -n "$status" ]] && printf '%s\n' "$status" | awk 'NF && $2 != "RUNNING" { exit 1 }'; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "gromox-core did not become ready in time" >&2
+  return 1
+}
+
+tail_key_logs() {
+  echo
+  echo "=== /var/log/php-fpm.log ==="
+  core_exec sh -lc 'tail -n 80 /var/log/php-fpm.log'
+  echo
+  echo "=== /var/log/supervisor-gromox-zcore-err.log ==="
+  core_exec sh -lc 'tail -n 80 /var/log/supervisor-gromox-zcore-err.log'
+  echo
+  echo "=== /var/log/supervisor-gromox-http-err.log ==="
+  core_exec sh -lc 'tail -n 80 /var/log/supervisor-gromox-http-err.log'
+}
+
+read_password_if_needed() {
+  if [[ -n "$MAILBOX_PASSWORD" ]]; then
+    return 0
+  fi
+  if [[ -t 0 ]]; then
+    read -r -s -p "Mailbox password for ${MAILBOX_EMAIL}: " MAILBOX_PASSWORD
+    echo
+    if [[ -n "$MAILBOX_PASSWORD" ]]; then
+      return 0
+    fi
+  fi
+  echo "Set GROMMUNIO_MAILBOX_PASSWORD before running this script." >&2
+  return 1
+}
+
+run_web_smoke() {
+  docker compose exec -T \
+    -e VERIFY_MAILBOX_EMAIL="$MAILBOX_EMAIL" \
+    -e VERIFY_MAILBOX_PASSWORD="$MAILBOX_PASSWORD" \
+    gromox-core sh -lc '
+      set -euo pipefail
+      if ! command -v curl >/dev/null 2>&1; then
+        echo "curl not available inside gromox-core; skip web smoke" >&2
+        exit 11
+      fi
+
+      rm -f /tmp/grommunio-verify.cookies \
+        /tmp/grommunio-verify.login.html \
+        /tmp/grommunio-verify.post.headers \
+        /tmp/grommunio-verify.follow.headers \
+        /tmp/grommunio-verify.follow.html
+
+      curl -k -s \
+        -c /tmp/grommunio-verify.cookies \
+        -A "Mozilla/5.0" \
+        "https://127.0.0.1:8443/web/" \
+        >/tmp/grommunio-verify.login.html
+
+      curl -k -s \
+        -b /tmp/grommunio-verify.cookies \
+        -c /tmp/grommunio-verify.cookies \
+        -A "Mozilla/5.0" \
+        -e "https://127.0.0.1:8443/web/" \
+        --data-urlencode "username=${VERIFY_MAILBOX_EMAIL}" \
+        --data-urlencode "password=${VERIFY_MAILBOX_PASSWORD}" \
+        --data "language=de_DE" \
+        --data "theme=default" \
+        -D /tmp/grommunio-verify.post.headers \
+        "https://127.0.0.1:8443/web/?logon" \
+        >/tmp/grommunio-verify.post.html
+
+      curl -k -s -L \
+        -b /tmp/grommunio-verify.cookies \
+        -A "Mozilla/5.0" \
+        -D /tmp/grommunio-verify.follow.headers \
+        "https://127.0.0.1:8443/web/" \
+        >/tmp/grommunio-verify.follow.html
+
+      post_status=$(awk "NR==1 {print \$2}" /tmp/grommunio-verify.post.headers)
+      follow_status=$(awk "NR==1 {print \$2}" /tmp/grommunio-verify.follow.headers)
+
+      echo "web_login_post_status=${post_status}"
+      echo "web_follow_status=${follow_status}"
+
+      if [ "${post_status}" != "303" ]; then
+        exit 21
+      fi
+      if [ "${follow_status}" != "200" ]; then
+        exit 22
+      fi
+      if grep -q "Error 500 - Internal Server Error" /tmp/grommunio-verify.follow.html; then
+        exit 23
+      fi
+      if ! grep -qi "inbox" /tmp/grommunio-verify.follow.html; then
+        exit 24
+      fi
+    '
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+wait_for_core
+read_password_if_needed
+
+echo "=== supervisorctl status ==="
+core_exec supervisorctl status || true
+echo
+echo "=== domain ==="
+core_exec grommunio-admin domain show "$DOMAIN"
+echo
+echo "=== mailbox ==="
+core_exec grommunio-admin user show "$MAILBOX_EMAIL"
+echo
+echo "=== mailbox properties ==="
+core_exec grommunio-admin user show "$MAILBOX_EMAIL" | grep -iE 'smtpaddress|emailaddress|creationtime|displaytypeex' || true
+echo
+echo "=== exmdb folders ==="
+core_exec grommunio-admin exmdb "$MAILBOX_EMAIL" folder list
+echo
+echo "=== web smoke ==="
+if ! run_web_smoke; then
+  tail_key_logs
+  exit 1
+fi
+
+echo
+echo "Local verification finished."

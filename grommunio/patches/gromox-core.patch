@@ -1,0 +1,222 @@
+--- a/docker-entrypoint.sh
++++ b/docker-entrypoint.sh
+@@ -8,13 +8,72 @@
+   set +a
+ fi
+ 
+-# Use persistent marker directory (survives restarts with volumes)
+-MARKER_DIR="/etc/gromox/.setup"
+-mkdir -p "${MARKER_DIR}"
++# Keep DB initialization persistent, but rebuild generated config on
++# every fresh container root filesystem.
++DB_MARKER_DIR="/data/.setup"
++ENTRY_MARKER_DIR="/home/.setup"
++mkdir -p "${DB_MARKER_DIR}" "${ENTRY_MARKER_DIR}"
++
++# Recreate the expected runtime state when data paths are bind mounts.
++install -d \
++  /var/lib/gromox \
++  /var/lib/gromox/domain \
++  /var/lib/gromox/queue \
++  /var/lib/gromox/queue/cache \
++  /var/lib/gromox/queue/mess \
++  /var/lib/gromox/queue/save \
++  /var/lib/gromox/queue/timer \
++  /var/lib/gromox/user \
++  /var/lib/grommunio-admin-api \
++  /var/lib/grommunio-antispam \
++  /var/lib/grommunio-dav \
++  /var/lib/grommunio-web \
++  /var/lib/grommunio-web/session \
++  /var/lib/grommunio-web/sqlite-index \
++  /var/lib/grommunio-web/tmp
++
++chown gromox:gromox \
++  /var/lib/gromox \
++  /var/lib/gromox/domain \
++  /var/lib/gromox/queue \
++  /var/lib/gromox/queue/cache \
++  /var/lib/gromox/queue/mess \
++  /var/lib/gromox/queue/save \
++  /var/lib/gromox/queue/timer \
++  /var/lib/gromox/user
++chmod 0770 \
++  /var/lib/gromox \
++  /var/lib/gromox/domain \
++  /var/lib/gromox/queue \
++  /var/lib/gromox/queue/cache \
++  /var/lib/gromox/queue/mess \
++  /var/lib/gromox/queue/save \
++  /var/lib/gromox/queue/timer \
++  /var/lib/gromox/user
++
++chown grommunio:grommunio /var/lib/grommunio-admin-api
++chmod 0700 /var/lib/grommunio-admin-api
++
++chown groas:grommunio /var/lib/grommunio-antispam
++chmod 0750 /var/lib/grommunio-antispam
++
++chown root:grodav /var/lib/grommunio-dav
++chmod 0770 /var/lib/grommunio-dav
++
++chown groweb:groweb \
++  /var/lib/grommunio-web \
++  /var/lib/grommunio-web/session \
++  /var/lib/grommunio-web/sqlite-index \
++  /var/lib/grommunio-web/tmp
++chmod 0770 \
++  /var/lib/grommunio-web \
++  /var/lib/grommunio-web/session \
++  /var/lib/grommunio-web/sqlite-index \
++  /var/lib/grommunio-web/tmp
+ 
+ # Allow forced reconfiguration via environment variable
+ if [ "${FORCE_RECONFIG}" = "true" ]; then
+-  rm -f "${MARKER_DIR}/db_done" "${MARKER_DIR}/entry_done"
++  rm -f "${DB_MARKER_DIR}/db_done" "${ENTRY_MARKER_DIR}/entry_done"
+ fi
+ 
+ # Wait for database to be reachable
+@@ -26,15 +85,63 @@
+ done
+ 
+ # Run DB initialization (once)
+-if [ ! -f "${MARKER_DIR}/db_done" ]; then
++if [ ! -f "${DB_MARKER_DIR}/db_done" ]; then
+   /home/scripts/db.sh
+-  touch "${MARKER_DIR}/db_done"
++  touch "${DB_MARKER_DIR}/db_done"
+ fi
+ 
+-# Run entrypoint configuration (once)
+-if [ ! -f "${MARKER_DIR}/entry_done" ]; then
++# Run entrypoint configuration once per fresh container filesystem so
++# recreated containers rebuild generated config cleanly.
++if [ ! -f "${ENTRY_MARKER_DIR}/entry_done" ]; then
++  export TERM="${TERM:-dumb}"
++  rm -f /etc/grommunio-admin-common/nginx-ssl.conf
+   /home/entrypoint.sh
+-  touch "${MARKER_DIR}/entry_done"
++
++  # Keep every local service aligned on the single-node internal host.
++  . /home/common/helpers
++  touch /etc/gromox/gromox.cfg
++  setconf /etc/gromox/gromox.cfg host_id "${INTERNAL_HOSTNAME}"
++  setconf /etc/gromox/smtp.cfg host_id "${INTERNAL_HOSTNAME}"
++  setconf /etc/gromox/delivery.cfg host_id "${INTERNAL_HOSTNAME}"
++  setconf /etc/gromox/http.cfg host_id "${INTERNAL_HOSTNAME}"
++  setconf /etc/gromox/zcore.cfg host_id "${INTERNAL_HOSTNAME}"
++  # Keep the current image layout. The documented zcore default points at
++  # /usr/share/gromox/zcore, but this image expects assets such as
++  # notify_bounce under /usr/share/gromox.
++  setconf /etc/gromox/zcore.cfg data_file_path "/usr/share/gromox"
++  setconf /etc/gromox/zcore.cfg config_file_path "/etc/gromox/zcore:/etc/gromox"
++  setconf /etc/postfix/main.cf virtual_transport "smtp:[127.0.0.1]:24"
++  if [ -f /home/postfix-transport.seed ]; then
++    cp /home/postfix-transport.seed /etc/postfix/transport
++  else
++    : > /etc/postfix/transport
++  fi
++  if [ -f /etc/postfix/relay ]; then
++    postmap lmdb:/etc/postfix/relay
++  else
++    : > /etc/postfix/relay
++    postmap lmdb:/etc/postfix/relay
++  fi
++  if [ -f /etc/postfix/relay_recipients ]; then
++    postmap lmdb:/etc/postfix/relay_recipients
++  else
++    : > /etc/postfix/relay_recipients
++    postmap lmdb:/etc/postfix/relay_recipients
++  fi
++  postmap lmdb:/etc/postfix/transport
++  setconf /etc/postfix/main.cf transport_maps "lmdb:/etc/postfix/transport"
++
++  cat > /etc/gromox/timer_agent.cfg <<EOF
++timer_host=${INTERNAL_HOSTNAME}
++timer_port=6666
++EOF
++
++  cat > /etc/gromox/event_proxy.cfg <<EOF
++event_host=${INTERNAL_HOSTNAME}
++event_port=33333
++EOF
++
++  touch "${ENTRY_MARKER_DIR}/entry_done"
+ fi
+ 
+ # ── Port remapping ─────────────────────────────────────────────────
+@@ -64,6 +171,27 @@
+   sed -i 's/^smtp\(\s\+\)inet/2525\1inet/' /etc/postfix/master.cf
+   sed -i 's/^submission\(\s\+\)inet/2587\1inet/' /etc/postfix/master.cf
+   sed -i 's/^smtps\(\s\+\)inet/2465\1inet/' /etc/postfix/master.cf
++  if ! grep -qE '^2587[[:space:]]+inet[[:space:]]' /etc/postfix/master.cf; then
++    cat >> /etc/postfix/master.cf <<'EOF'
++2587      inet  n       -       n       -       -       smtpd
++  -o syslog_name=postfix/2587
++  -o smtpd_tls_security_level=encrypt
++  -o smtpd_sasl_auth_enable=yes
++  -o smtpd_tls_auth_only=yes
++  -o smtpd_client_restrictions=permit_sasl_authenticated,reject
++  -o milter_macro_daemon_name=ORIGINATING
++EOF
++  fi
++  if ! grep -qE '^2465[[:space:]]+inet[[:space:]]' /etc/postfix/master.cf; then
++    cat >> /etc/postfix/master.cf <<'EOF'
++2465      inet  n       -       n       -       -       smtpd
++  -o syslog_name=postfix/2465
++  -o smtpd_tls_wrappermode=yes
++  -o smtpd_sasl_auth_enable=yes
++  -o smtpd_client_restrictions=permit_sasl_authenticated,reject
++  -o milter_macro_daemon_name=ORIGINATING
++EOF
++  fi
+ fi
+ 
+ # Remap gromox imap/pop3 ports
+@@ -79,7 +207,7 @@
+ # ── Conditional services ──────────────────────────────────────────
+ 
+ # Enable grommunio-chat if configured (check for chat config file existence)
+-if [ -f "${CHAT_CONFIG}" ] && [ -f /etc/supervisor.d/grommunio-chat.conf ]; then
++if [ "${ENABLE_CHAT:-false}" = "true" ] && [ -f "${CHAT_CONFIG}" ] && [ -f /etc/supervisor.d/grommunio-chat.conf ]; then
+   sed -i 's/autostart=false/autostart=true/' /etc/supervisor.d/grommunio-chat.conf
+ fi
+ 
+--- a/entrypoint.sh
++++ b/entrypoint.sh
+@@ -38,7 +38,12 @@
+ 
+ # Set repository credentials directly
+ # shellcheck source=common/repo
+-INSTALLVALUE="core, chat"
++ENABLE_CHAT="${ENABLE_CHAT:-false}"
++if [ "${ENABLE_CHAT}" = "true" ]; then
++  INSTALLVALUE="core, chat"
++else
++  INSTALLVALUE="core"
++fi
+ 
+ X500_FILE="/etc/gromox/.x500_org"
+ if [ -n "${X500}" ]; then
+--- a/supervisor.d/saslauthd.conf
++++ b/supervisor.d/saslauthd.conf
+@@ -1,5 +1,5 @@
+ [program:saslauthd]
+-command=/usr/sbin/saslauthd -d -a pam
++command=/usr/sbin/saslauthd -d -r -a pam
+ autostart=true
+ autorestart=true
+ stdout_logfile=/var/log/supervisor-saslauthd.log
+--- a/common/ssl_setup
++++ b/common/ssl_setup
+@@ -7,7 +7,8 @@ SSL_KEY_T="/etc/grommunio-common/ssl/server.key"
+ selfcert()
+ {
+ 
+-  openssl req -x509 -new -nodes -out "${SSL_BUNDLE_T}" -keyout "${SSL_KEY_T}" \
++  openssl req -x509 -new -nodes -days "${SSL_DAYS:-30}" \
++          -out "${SSL_BUNDLE_T}" -keyout "${SSL_KEY_T}" \
+           -subj "/CN=${FQDN}" -addext "subjectAltName = DNS:${FQDN}, DNS:autodiscover.${DOMAIN}" >>"${LOGFILE}" 2>&1
+ 
+   cp -f "${SSL_BUNDLE_T}" "/etc/pki/trust/anchors/"

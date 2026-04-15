@@ -1,0 +1,4 @@
+# Generated from split-delivery/grommunio-mailboxes.txt via
+# generate_split_delivery_maps.py. Do not commit rendered outputs.
+/split-valid.map
+/transport.map

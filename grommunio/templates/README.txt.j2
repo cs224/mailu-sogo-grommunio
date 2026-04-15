@@ -1,0 +1,36 @@
+This bundle contains a minimal compose-first grommunio setup intended to
+sit behind Mailu for selected-mailbox split delivery.
+
+Files:
+- docker-compose.yml
+- data/grommunio/variables/var.env
+- provision-grommunio.sh
+- verify-grommunio.sh
+- postfix/transport.seed
+- gromox-core/...
+- README.txt
+
+Before first start:
+1. Ensure the external Docker network {{ mailhub_network|tojson }} exists.
+2. If you set `GROMMUNIO_EDGE_NETWORK`, ensure that external Docker
+   network exists before starting the stack.
+3. Build the local image with `docker compose build`.
+4. Start the stack with `docker compose up -d`.
+5. Provision the server, domain, and mailbox locally from the Docker host:
+   `GROMMUNIO_MAILBOX_PASSWORD='...' ./provision-grommunio.sh`
+6. Verify the local web and mailbox state:
+   `GROMMUNIO_MAILBOX_PASSWORD='...' ./verify-grommunio.sh`
+7. Keep `postfix/transport.seed` aligned with the split-delivery inventory.
+8. Point Mailu split delivery for `{{ mailbox_email }}` at
+   `smtp:[{{ mailhub_alias }}]:24`.
+9. Route any public Outlook autodiscover namespace for this mailbox
+   domain to the native grommunio HTTPS endpoint on `{{ fqdn }}` rather
+   than to a separate sidecar.
+
+This generated setup intentionally keeps Office, Files, and Archive off
+by default. It also keeps Chat off unless `GROMMUNIO_ENABLE_CHAT=true`.
+The generated provisioning path deliberately uses `grommunio-admin` only.
+It does not treat direct SQL updates as part of the normal deploy method.
+For native Outlook, use grommunio's real
+`/Autodiscover/Autodiscover.xml` and MAPI/HTTP path behind the reverse
+proxy. The same mailbox-domain autodiscover host can be routed there.
