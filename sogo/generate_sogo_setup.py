@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SOGO_ENV_FILE=/opt/sogo/sogo-via-vps.env python3 ./generate_sogo_setup.py
 """
 Generate a minimal SOGo-on-Docker-Compose setup beside Mailu.
 
@@ -22,7 +23,7 @@ Environment variables (or .env entries):
   SOGO_BIND_PORT=8888
   SOGO_EDGE_NETWORK=edge
   SOGO_EDGE_ALIAS=sogo-web
-  SOGO_TZ=Europe/Berlin
+  SOGO_TZ=Europe/Zurich
   SOGO_MAIL_DOMAIN=mail.example.com
   SOGO_LOGIN_EMAIL=user@mail.example.com
   SOGO_LOGIN_CN=user
@@ -122,10 +123,10 @@ def main() -> int:
     bind_port = getenv("SOGO_BIND_PORT", "", file_values)
     edge_network = getenv("SOGO_EDGE_NETWORK", "", file_values)
     edge_alias = getenv("SOGO_EDGE_ALIAS", "", file_values)
-    tz = getenv("SOGO_TZ", "Europe/Berlin", file_values)
+    tz = getenv("SOGO_TZ", "Europe/Zurich", file_values)
     mail_domain = getenv("SOGO_MAIL_DOMAIN", "mail.example.com", file_values)
     login_email = getenv("SOGO_LOGIN_EMAIL", "user@mail.example.com", file_values)
-    login_cn = getenv("SOGO_LOGIN_CN", "cs", file_values)
+    login_cn = getenv("SOGO_LOGIN_CN", "user", file_values)
 
     imap_url = getenv("SOGO_IMAP_URL", "", file_values)
     imap_host = getenv("SOGO_IMAP_HOST", "front", file_values)
@@ -454,9 +455,10 @@ def main() -> int:
     print("Create or update the SOGo login row without storing the mailbox password in a file:")
     print(f"  cd {shell_target_dir}")
     print(f"  read -rsp \"Mailu mailbox password for {login_email}: \" MAILPW; echo")
+    print("  MAILPW_SQL=${MAILPW//\\'/\\'\\'}")
     print(f"  docker compose exec -T db mariadb -u{db_user} -p{db_password} {db_name} <<SQL")
     print("  INSERT INTO sogo_users (c_uid, c_name, c_password, c_cn, mail)")
-    print(f"  VALUES ({login_email_q}, {login_email_q}, '$MAILPW', {login_cn_q}, {login_email_q})")
+    print(f"  VALUES ({login_email_q}, {login_email_q}, '$MAILPW_SQL', {login_cn_q}, {login_email_q})")
     print("  ON DUPLICATE KEY UPDATE")
     print("    c_name = VALUES(c_name),")
     print("    c_password = VALUES(c_password),")
@@ -467,9 +469,10 @@ def main() -> int:
     print("Update only the password later:")
     print(f"  cd {shell_target_dir}")
     print(f"  read -rsp \"New Mailu mailbox password for {login_email}: \" MAILPW; echo")
+    print("  MAILPW_SQL=${MAILPW//\\'/\\'\\'}")
     print(f"  docker compose exec -T db mariadb -u{db_user} -p{db_password} {db_name} <<SQL")
     print("  UPDATE sogo_users")
-    print("  SET c_password = '$MAILPW'")
+    print("  SET c_password = '$MAILPW_SQL'")
     print(f"  WHERE c_uid = {login_email_q};")
     print("  SQL")
 

@@ -31,7 +31,7 @@ Environment variables (or .env entries):
   GROMMUNIO_SMTPS_BIND=
   GROMMUNIO_IMAPS_BIND=
   GROMMUNIO_ADMIN_BIND=
-  GROMMUNIO_TZ=Europe/Berlin
+  GROMMUNIO_TZ=Europe/Zurich
   GROMMUNIO_FQDN=grommunio.example.com
   GROMMUNIO_DOMAIN=mail.example.com
   GROMMUNIO_DOMAIN_MAX_USERS=25
@@ -306,7 +306,7 @@ def main() -> int:
     imaps_bind = getenv("GROMMUNIO_IMAPS_BIND", "", file_values)
     admin_bind = getenv("GROMMUNIO_ADMIN_BIND", "", file_values)
 
-    timezone = getenv("GROMMUNIO_TZ", "Europe/Berlin", file_values)
+    timezone = getenv("GROMMUNIO_TZ", "Europe/Zurich", file_values)
     fqdn = getenv("GROMMUNIO_FQDN", "grommunio.example.com", file_values)
     domain = getenv("GROMMUNIO_DOMAIN", "mail.example.com", file_values)
     domain_max_users = getenv("GROMMUNIO_DOMAIN_MAX_USERS", "25", file_values)
