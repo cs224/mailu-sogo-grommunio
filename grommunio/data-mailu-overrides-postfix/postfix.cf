@@ -1,1 +1,1 @@
-virtual_mailbox_maps = lmdb:/etc/postfix/split-valid.map, ${podop}mailbox
+virtual_mailbox_maps = lmdb:/etc/postfix/split-valid.map, \${podop}mailbox
