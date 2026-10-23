@@ -48,16 +48,27 @@
  COPY gromox-core/common /home/common
 --- a/common/ssl_setup
 +++ b/common/ssl_setup
-@@ -8,7 +8,8 @@
+@@ -8,8 +8,18 @@
  selfcert()
  {
  
 -  openssl req -x509 -new -nodes -out "${SSL_BUNDLE_T}" -keyout "${SSL_KEY_T}" \
-+  openssl req -x509 -new -nodes -days "${SSL_DAYS:-30}" \
-+          -out "${SSL_BUNDLE_T}" -keyout "${SSL_KEY_T}" \
-           -subj "/CN=${FQDN}" -addext "subjectAltName = DNS:${FQDN}, DNS:autodiscover.${DOMAIN}" >>"${LOGFILE}" 2>&1
+-          -subj "/CN=${FQDN}" -addext "subjectAltName = DNS:${FQDN}, DNS:autodiscover.${DOMAIN}" >>"${LOGFILE}" 2>&1
++  local cert_pub key_pub
++  if [ -s "${SSL_BUNDLE_T}" ] && [ -s "${SSL_KEY_T}" ] &&
++     openssl x509 -in "${SSL_BUNDLE_T}" -checkend 0 -noout >>"${LOGFILE}" 2>&1 &&
++     cert_pub="$(openssl x509 -in "${SSL_BUNDLE_T}" -pubkey -noout 2>>"${LOGFILE}")" &&
++     key_pub="$(openssl pkey -in "${SSL_KEY_T}" -pubout 2>>"${LOGFILE}")" &&
++     [ "$cert_pub" = "$key_pub" ]; then
++    echo "Keeping existing valid TLS certificate and matching private key." >>"${LOGFILE}"
++  else
++    openssl req -x509 -new -nodes -days "${SSL_DAYS:-30}" \
++            -out "${SSL_BUNDLE_T}" -keyout "${SSL_KEY_T}" \
++            -subj "/CN=${FQDN}" -addext "subjectAltName = DNS:${FQDN}, DNS:autodiscover.${DOMAIN}" >>"${LOGFILE}" 2>&1 || return 1
++  fi
  
    cp -f "${SSL_BUNDLE_T}" "/etc/pki/trust/anchors/"
+   update-ca-certificates
 --- a/docker-entrypoint.sh
 +++ b/docker-entrypoint.sh
 @@ -8,13 +8,75 @@

@@ -35,6 +35,8 @@ The Leap 16 compatibility changes are:
 - create the package-declared runtime socket directories before supervisord;
 - retain loopback-only TCP event/timer endpoints for the existing local clients;
 - run the idempotent `gromox-dbop -U` schema upgrade before starting services.
+- retain a valid matching persisted certificate/key pair when recreating a
+  self-signed installation, so mail clients do not see a new certificate.
 
 The database-client setting is specific to this bundle's database topology. It
 must be revisited if the database is moved outside its private Docker network or
@@ -82,3 +84,13 @@ The test image contained Gromox `3.12.251.mf230ef0`, grommunio Web
 used a disposable account; a physical iPhone/Outlook client session was not
 tested. Recovery DNS, certificates, account credentials and firewall rules are
 lab concerns and are not included in the generated production build context.
+
+Certificate-preservation regression tests run without root or Docker against
+the generated context:
+
+```bash
+GROMMUNIO_TEST_CORE_DIR=/path/to/generated/gromox-core python3 -m unittest discover -s tests -v
+```
+
+They cover initial certificate generation, preservation across recreation, and
+repair of a mismatched certificate/private-key pair.
