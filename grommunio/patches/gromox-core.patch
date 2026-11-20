@@ -151,7 +151,7 @@
  fi
  
  # Wait for database to be reachable
-@@ -26,16 +88,79 @@
+@@ -26,16 +88,82 @@
  done
  
  # Run DB initialization (once)
@@ -234,12 +234,15 @@
 +setconf /etc/gromox/event_stub.cfg event_host ::1
 +setconf /etc/gromox/timer_agent.cfg timer_host ::1
 +
++# Disable nginx HTTP/2 for the nginx2root mitigation.
++sed -i -E 's/^([[:space:]]*)http2[[:space:]]+on[[:space:]]*;/\1http2 off;/' /usr/share/grommunio-common/nginx.conf
++
 +# Upgrade existing user metadata without reinitializing accounts.
 +gromox-dbop -U
  
  # ── Port remapping ─────────────────────────────────────────────────
  # Remap nginx to listen on high ports (>1024) so no privileges needed.
-@@ -64,6 +189,27 @@
+@@ -64,6 +192,27 @@
    sed -i 's/^smtp\(\s\+\)inet/2525\1inet/' /etc/postfix/master.cf
    sed -i 's/^submission\(\s\+\)inet/2587\1inet/' /etc/postfix/master.cf
    sed -i 's/^smtps\(\s\+\)inet/2465\1inet/' /etc/postfix/master.cf
@@ -267,7 +270,7 @@
  fi
  
  # Remap gromox imap/pop3 ports
-@@ -79,7 +225,7 @@
+@@ -79,7 +228,7 @@
  # ── Conditional services ──────────────────────────────────────────
  
  # Enable grommunio-chat if configured (check for chat config file existence)
